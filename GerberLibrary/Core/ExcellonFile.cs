@@ -473,7 +473,7 @@ namespace GerberLibrary
                             default:
                                 {
                                     var S = lines[currentline].Split(',');
-                                    if (S[0].IndexOf("INCH") == 0 || S[0].IndexOf("METRIC") == 0)
+                                    if (S[0].IndexOf("INCH") == 0 || S[0].IndexOf("METRIC") == 0 || S[0].IndexOf("MM") == 0)
                                     {
                                         if (S[0].IndexOf("INCH") ==0)
                                         {

@@ -1892,6 +1892,7 @@ namespace GerberLibrary
                                                             if (State.CurrentAperture != null)
                                                             {
                                                                 List<PolyLine> PL = State.CurrentAperture.CreatePolyLineSet(X, Y, State.LastShapeID++, State.FlashRotation, State.FlashScale, State.FlashMirror);
+                                                                State.CurrentAperture.Shapes.Add(PL);
                                                                 foreach (var p in PL)
                                                                 {
                                                                     p.ClearanceMode = State.ClearanceMode;

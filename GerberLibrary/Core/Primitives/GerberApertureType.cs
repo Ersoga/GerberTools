@@ -26,6 +26,7 @@ namespace GerberLibrary.Core.Primitives
 
     public class GerberApertureType
     {
+        public List<List<PolyLine>> Shapes = new List<List<PolyLine>>();
         public List<string> Issues = new List<string>();
         public List<GerberApertureType> Parts = new List<GerberApertureType>();
         public static int MacroPostFix = 1;
