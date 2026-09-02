@@ -30,6 +30,12 @@ namespace GerberLibrary
 
     public class ExcellonFile
     {
+        public GerberNumberFormat GNF { get; set; } = new GerberNumberFormat()
+        {
+            DigitsBefore = 3,
+            DigitsAfter = 3,
+            OmitLeading = true
+        };
         public void Load(ProgressLog log, string filename, double drillscaler = 1.0)
         {
             var Load = log.PushActivity("Loading Excellon");
@@ -400,10 +406,6 @@ namespace GerberLibrary
             bool headerdone = false;
             int currentline = 0;
             ExcellonTool CurrentTool = null;
-            GerberNumberFormat GNF = new GerberNumberFormat();
-            GNF.DigitsBefore = 3;
-            GNF.DigitsAfter = 3;
-            GNF.OmitLeading = true;
             double Scaler = 1.0f;
             bool FormatSpecified = false;
             bool NumberSpecHad = false;
