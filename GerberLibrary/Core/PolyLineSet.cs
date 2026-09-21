@@ -62,6 +62,19 @@ namespace GerberLibrary
         public string SanitizedFile = "";
         public BoardSide Side;
         public PolyLine ThinLine;
+
+        /// <summary>
+        /// Finish the centerline being drawn (forcezerowidth / zero-width apertures). A polyline must end
+        /// whenever the pen lifts or changes: D02 move, D03 flash, aperture select, region start, end of file.
+        /// Without this, "draw 0-1, flash at 5, draw 5-6" came out as one line 0-1-6 and an aperture
+        /// change mid-draw kept the old width.
+        /// </summary>
+        public void EndThinLine()
+        {
+            if (ThinLine == null) return;
+            NewThinShapes.Add(ThinLine);
+            ThinLine = null;
+        }
         public bool GenerateGeometry = true;
 
         public bool MirrorA = false;
@@ -1014,6 +1027,7 @@ namespace GerberLibrary
                     State.CoordinateFormat.SetMultiQuadrantMode();
                     break;
                 case "G36":
+                    State.EndThinLine();
                     State.PolygonMode = true;
                     State.PolygonPoints.Clear();
                     break;
@@ -1646,6 +1660,7 @@ namespace GerberLibrary
                                 GS.Split(GCC.originalline, State.CoordinateFormat);
                                 if (GS.Has("D") && GS.Get("D") >= 10)
                                 {
+                                    State.EndThinLine();
                                     if (State.Apertures.TryGetValue((int)GS.Get("D"), out State.CurrentAperture) == false)
                                     {
                                         //Console.WriteLine("Failed to get aperture {0} ({1})", GCC.numbercommands[0], GCC.originalline);
@@ -1880,15 +1895,12 @@ namespace GerberLibrary
                                                     case 2: // D02 
                                                         {
                                                             // move only. 
-                                                            if (State.ThinLine != null)
-                                                            {
-                                                                State.NewThinShapes.Add(State.ThinLine);
-                                                                State.ThinLine = null;
-                                                            }
+                                                            State.EndThinLine();
                                                         }
                                                         break;
                                                     case 3: // stamp 1 aperture D03
                                                         {
+                                                            State.EndThinLine();
                                                             if (State.CurrentAperture != null)
                                                             {
                                                                 List<PolyLine> PL = State.CurrentAperture.CreatePolyLineSet(X, Y, State.LastShapeID++, State.FlashRotation, State.FlashScale, State.FlashMirror);
@@ -1931,11 +1943,7 @@ namespace GerberLibrary
             }
 
             SetupRepeater(State, 1, 1, 0, 0);
-            if (State.ThinLine != null)
-            {
-                State.NewThinShapes.Add(State.ThinLine);
-                State.ThinLine = null;
-            }
+            State.EndThinLine();
         }
 
         private static ParsedGerber ProcessStream(ProgressLog log, string gerberfile, bool forcezerowidth, bool writesanitized, GerberParserState State, StreamReader sr)
