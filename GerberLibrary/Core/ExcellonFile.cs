@@ -399,6 +399,15 @@ namespace GerberLibrary
             return Path.Vertices;
         }
 
+        /// <summary>A coordinate, a drill/route G-code or a bare tool select ("T4", no diameter) only appears in the body.</summary>
+        static bool IsBodyLine(string line)
+        {
+            if (line.Length == 0) return false;
+            if (line[0] == 'X' || line[0] == 'Y') return true;
+            if (line == "M30" || line.StartsWith("G05") || line.StartsWith("G00") || line.StartsWith("G01") || line.StartsWith("G81") || line.StartsWith("G85")) return true;
+            return System.Text.RegularExpressions.Regex.IsMatch(line, @"^T\d+$");
+        }
+
         bool ParseExcellon(List<string> lines, double drillscaler,ProgressLog log )
         {
             var LogID = log.PushActivity("Parse Excellon");
@@ -447,8 +456,16 @@ namespace GerberLibrary
                 {
                     //Console.WriteLine("Excellon header starts at line {0}", currentline);
                     currentline++;
-                    while ((lines[currentline] != "%" && lines[currentline] != "M95"))
+                    while (currentline < lines.Count && lines[currentline] != "%" && lines[currentline] != "M95")
                     {
+                        if (IsBodyLine(lines[currentline]))
+                        {
+                            // No "%" / "M95" before the body started: the header ends here. Step back so the
+                            // outer loop's increment lands on this body line instead of skipping it.
+                            headerdone = true;
+                            currentline--;
+                            break;
+                        }
                         headerdone = true;
                         //double InchMult = 1;// 0.010;
                         switch (lines[currentline])
@@ -579,13 +596,17 @@ namespace GerberLibrary
                             switch (GCC.charcommands[0])
                             {
                                 case 'T':
-                                    if ((int)GCC.numbercommands[0] > 0)
                                     {
-                                        CurrentTool = Tools[(int)GCC.numbercommands[0]];
-                                    }
-                                    else
-                                    {
-                                        CurrentTool = null;
+                                        // T0 usually unloads the tool, but some writers define T0 with a diameter in the
+                                        // header and drill with it. A tool the header never defined (or defines inline,
+                                        // "T3C0.8") is created here instead of throwing KeyNotFoundException.
+                                        int id = (int)GCC.numbercommands[0];
+                                        if (!Tools.TryGetValue(id, out ExcellonTool tool) && id > 0)
+                                        {
+                                            tool = new ExcellonTool { ID = id, Radius = GNF.ScaleFileToMM(GCC.GetNumber('C')) / 2.0f };
+                                            Tools[id] = tool;
+                                        }
+                                        CurrentTool = tool;
                                     }
                                     break;
                                 case 'M':
@@ -612,7 +633,7 @@ namespace GerberLibrary
                                             if (GLS.HasAfter("G", "X")) { x2 = GNF.ScaleFileToMM(GLS.GetAfter("G", "X") * Scaler); LastX = x2; }
                                             if (GLS.HasAfter("G", "Y")) { y2 = GNF.ScaleFileToMM(GLS.GetAfter("G", "Y") * Scaler); LastY = y2; }
 
-                                            CurrentTool.Slots.Add(new ExcellonTool.SlotInfo() { Start = new PointD(x1 * drillscaler, y1 * drillscaler), End = new PointD(x2 * drillscaler, y2 * drillscaler) });
+                                            CurrentTool?.Slots.Add(new ExcellonTool.SlotInfo() { Start = new PointD(x1 * drillscaler, y1 * drillscaler), End = new PointD(x2 * drillscaler, y2 * drillscaler) });
 
                                             LastX = x2;
                                             LastY = y2;
@@ -645,7 +666,7 @@ namespace GerberLibrary
                                             if (GLS.HasAfter("G", "X")) { x2 = GNF.ScaleFileToMM(GLS.GetAfter("G", "X") * Scaler); LastX = x2; }
                                             if (GLS.HasAfter("G", "Y")) { y2 = GNF.ScaleFileToMM(GLS.GetAfter("G", "Y") * Scaler); LastY = y2; }
                                             if (Compensation == CutterCompensation.None)
-                                                CurrentTool.Slots.Add(new ExcellonTool.SlotInfo() { Start = new PointD(x1 * drillscaler, y1 * drillscaler), End = new PointD(x2 * drillscaler, y2 * drillscaler) });
+                                                CurrentTool?.Slots.Add(new ExcellonTool.SlotInfo() { Start = new PointD(x1 * drillscaler, y1 * drillscaler), End = new PointD(x2 * drillscaler, y2 * drillscaler) });
                                             else
                                                 PathCompensation.Add(new PointD(x2 * drillscaler, y2 * drillscaler));
 
@@ -679,7 +700,7 @@ namespace GerberLibrary
 
                                             /* create line segments from set of points */
                                             var array = comp.Zip(comp.Skip(1), Tuple.Create);
-                                            CurrentTool.Slots.AddRange(array.Select(i => new ExcellonTool.SlotInfo() { Start = i.Item1, End = i.Item2 }));
+                                            CurrentTool?.Slots.AddRange(array.Select(i => new ExcellonTool.SlotInfo() { Start = i.Item1, End = i.Item2 }));
 
                                             Compensation = CutterCompensation.None;
                                             PathCompensation.Clear();
@@ -736,7 +757,7 @@ namespace GerberLibrary
                                                     if (GS.Has("Y"))
                                                         Y += repeatY;
 
-                                                    CurrentTool.Drills.Add(new PointD(X * drillscaler, Y * drillscaler));
+                                                    CurrentTool?.Drills.Add(new PointD(X * drillscaler, Y * drillscaler));
                                                     LastX = X;
                                                     LastY = Y;
                                                 }
@@ -748,7 +769,7 @@ namespace GerberLibrary
                                                 double Y = LastY;
                                                 if (GS.Has("Y")) Y = GNF.ScaleFileToMM(GS.Get("Y") * Scaler);
                                                 if (Compensation == CutterCompensation.None)
-                                                    CurrentTool.Drills.Add(new PointD(X * drillscaler, Y * drillscaler));
+                                                    CurrentTool?.Drills.Add(new PointD(X * drillscaler, Y * drillscaler));
                                                 else
                                                     PathCompensation.Add(new PointD(X * drillscaler, Y * drillscaler));
                                                 LastX = X;

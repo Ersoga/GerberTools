@@ -1152,6 +1152,13 @@ namespace GerberLibrary
 
         private static void ParseGerber274_Lines(bool forcezerowidth, GerberParserState State, List<String> lines)
         {
+            ParseLines(forcezerowidth, State, lines);
+            SetupRepeater(State, 1, 1, 0, 0);
+            State.EndThinLine();
+        }
+
+        private static void ParseLines(bool forcezerowidth, GerberParserState State, List<String> lines)
+        {
             while (State.CurrentLineIndex < lines.Count)
             {
                 GCodeCommand GCC = new GCodeCommand();
@@ -1273,7 +1280,14 @@ namespace GerberLibrary
 
                                                                         }
                                                                     }
-                                                                    if (ismacro == false)
+                                                                    if (ismacro == false && GCC.numbercommands.Count < 2)
+                                                                    {
+                                                                        // No readable size (e.g. "R,0.03260.326"): keep the aperture as an empty one, whose
+                                                                        // flashes and draws are ignored, instead of failing the whole file on numbercommands[1].
+                                                                        Console.WriteLine("Aperture {0} has no usable size, treated as empty: {1}", ATID, GCC.originalline);
+                                                                        AT.ShapeType = GerberApertureShape.Empty;
+                                                                    }
+                                                                    else if (ismacro == false)
                                                                     {
                                                                         switch (GCC.charcommands[4])
                                                                         {
@@ -1288,8 +1302,8 @@ namespace GerberLibrary
                                                                                     if (Gerber.ShowProgress) Console.WriteLine(" -- grew aperture radius to minimum radius: {0}", State.MinimumApertureRadius);
                                                                                 }
 
-                                                                                AT.SetCircle(radius); // hole ignored for now!
-                                                                                                      // TODO: Add Hole Support
+                                                                                AT.SetCircle(radius);
+                                                                                SetApertureHole(AT, GCC, 2, State);
                                                                                 if (AT.CircleRadius == 0)
                                                                                 {
                                                                                     AT.ZeroWidth = true;
@@ -1305,18 +1319,19 @@ namespace GerberLibrary
                                                                                     AT.NGonYoff = 0;
                                                                                     double Rotation = 0;
                                                                                     if (GCC.numbercommands.Count > 3) Rotation = GCC.numbercommands[3];
-                                                                                    AT.NGon((int)GCC.numbercommands[2], State.CoordinateFormat.ScaleFileToMM(GCC.numbercommands[1]) / 2, 0, 0, Rotation); // hole ignored for now!
-                                                                                                                                                                                                          // TODO: Add Hole Support
+                                                                                    AT.NGon((int)GCC.numbercommands[2], State.CoordinateFormat.ScaleFileToMM(GCC.numbercommands[1]) / 2, 0, 0, Rotation);
+                                                                                    SetApertureHole(AT, GCC, 4, State);
                                                                                 }
                                                                                 break;
                                                                             case 'R': // rectangle aperture
                                                                                 {
                                                                                     if (Gerber.ShowProgress) Console.WriteLine(" rectangle");
                                                                                     double W = Math.Abs(State.CoordinateFormat.ScaleFileToMM(GCC.numbercommands[1]));
-                                                                                    double H = Math.Abs(State.CoordinateFormat.ScaleFileToMM(GCC.numbercommands[2]));
+                                                                                    // Some writers emit "R,<size>" for a square: a missing height means height = width.
+                                                                                    double H = GCC.numbercommands.Count > 2 ? Math.Abs(State.CoordinateFormat.ScaleFileToMM(GCC.numbercommands[2])) : W;
                                                                                     //  Console.WriteLine("      rectangle: {0},{1} (in mm: {2},{3})",GCC.numbercommands[1],GCC.numbercommands[2], W,H);
-                                                                                    AT.SetRectangle(W, H, 0); // hole ignored for now!
-                                                                                                              // TODO: Add Hole Support
+                                                                                    AT.SetRectangle(W, H, 0);
+                                                                                    SetApertureHole(AT, GCC, 3, State);
                                                                                 }
 
 
@@ -1326,12 +1341,9 @@ namespace GerberLibrary
                                                                                     if (Gerber.ShowProgress) Console.WriteLine(" obround");
 
                                                                                     double W = State.CoordinateFormat.ScaleFileToMM(GCC.numbercommands[1]);
-                                                                                    double H = State.CoordinateFormat.ScaleFileToMM(GCC.numbercommands[2]);
+                                                                                    double H = GCC.numbercommands.Count > 2 ? State.CoordinateFormat.ScaleFileToMM(GCC.numbercommands[2]) : W;
                                                                                     AT.SetObround(W, H);
-                                                                                    if (GCC.numbercommands.Count() > 3)
-                                                                                    {
-                                                                                        // TODO: Add Hole Support
-                                                                                    }
+                                                                                    SetApertureHole(AT, GCC, 3, State);
                                                                                 }
                                                                                 break;
                                                                         }
@@ -1433,6 +1445,21 @@ namespace GerberLibrary
                                                                 if (a[0] == '0')
                                                                 {
                                                                     // comment line
+                                                                }
+                                                                else if (a[0] == '$')
+                                                                {
+                                                                    // Variable definition ($n=expression). Decoding it as a primitive reads the digits
+                                                                    // as a primitive code ("$2=$2/2" became 22, lower-left line) and indexes missing params.
+                                                                    Regex R = new Regex(@"(?<normal>\s*(?<dec>\$\d+)\s*\=\s*(?<rightside>.*))");
+                                                                    var M = R.Match(a);
+                                                                    if (M.Length > 0)
+                                                                    {
+                                                                        GerberApertureMacroPart AMP = new GerberApertureMacroPart();
+                                                                        AMP.Type = GerberApertureMacroPart.ApertureMacroTypes.Equation;
+                                                                        AMP.EquationTarget = M.Groups["dec"].Value;
+                                                                        AMP.EquationSource = M.Groups["rightside"].Value;
+                                                                        AM.Parts.Add(AMP);
+                                                                    }
                                                                 }
                                                                 else
                                                                 {
@@ -1636,6 +1663,9 @@ namespace GerberLibrary
                                                                     }
                                                                     State.CurrentLineIndex++;
                                                                 }
+                                                                // now one past "%AB*%": step back so the loop's own increment lands on the next line
+                                                                // instead of skipping it (a block defined right after another one was lost)
+                                                                State.CurrentLineIndex--;
                                                                 if (Gerber.ShowProgress) Console.Write("to {0}", State.CurrentLineIndex);
 
                                                                 GerberApertureType AT = new GerberApertureType();
@@ -1901,7 +1931,11 @@ namespace GerberLibrary
                                                     case 3: // stamp 1 aperture D03
                                                         {
                                                             State.EndThinLine();
-                                                            if (State.CurrentAperture != null)
+                                                            if (State.CurrentAperture != null && State.CurrentAperture.ShapeType == GerberApertureShape.GerberBlock && State.CurrentAperture.GerberLines != null)
+                                                            {
+                                                                FlashBlock(forcezerowidth, State, State.CurrentAperture, X, Y);
+                                                            }
+                                                            else if (State.CurrentAperture != null)
                                                             {
                                                                 List<PolyLine> PL = State.CurrentAperture.CreatePolyLineSet(X, Y, State.LastShapeID++, State.FlashRotation, State.FlashScale, State.FlashMirror);
                                                                 State.CurrentAperture.Shapes.Add(PL);
@@ -1941,9 +1975,50 @@ namespace GerberLibrary
                 }
                 State.CurrentLineIndex++;
             }
+        }
 
-            SetupRepeater(State, 1, 1, 0, 0);
+        /// <summary>
+        /// Flash a block aperture (%AB): its content (draws, arcs, regions, flashes, nested blocks) is parsed with the
+        /// current state and added like any other geometry, then moved from the block origin to the flash point.
+        /// Nested block flashes recurse and compose their offsets. The parser state is restored afterwards.
+        /// LR / LM / LS are not applied to block content.
+        /// </summary>
+        private static void FlashBlock(bool forcezerowidth, GerberParserState State, GerberApertureType block, double X, double Y)
+        {
+            var lines = new List<string>(block.GerberLines);
+            if (lines.Count > 0 && lines[lines.Count - 1] == "%AB*%") lines.RemoveAt(lines.Count - 1);   // the closing line of the definition
+
+            int shapes = State.NewShapes.Count, thin = State.NewThinShapes.Count;
+            int lineIndex = State.CurrentLineIndex, lastD = State.LastD;
+            double lastX = State.LastX, lastY = State.LastY;
+            double rotation = State.FlashRotation, scale = State.FlashScale;
+            var mirror = State.FlashMirror;
+            var aperture = State.CurrentAperture;
+            var interpolation = State.MoveInterpolation;
+            bool clearance = State.ClearanceMode;
+
+            State.CurrentLineIndex = 0;
+            State.LastX = 0;
+            State.LastY = 0;
+            ParseLines(forcezerowidth, State, lines);
             State.EndThinLine();
+
+            State.CurrentLineIndex = lineIndex;
+            State.LastD = lastD;
+            State.LastX = lastX;
+            State.LastY = lastY;
+            State.FlashRotation = rotation;
+            State.FlashScale = scale;
+            State.FlashMirror = mirror;
+            State.CurrentAperture = aperture;
+            State.MoveInterpolation = interpolation;
+            State.ClearanceMode = clearance;
+
+            // flash outlines are shared with their aperture's Shapes, so moving them here moves them there too
+            for (int i = shapes; i < State.NewShapes.Count; i++)
+                foreach (var v in State.NewShapes[i].Vertices) { v.X += X; v.Y += Y; }
+            for (int i = thin; i < State.NewThinShapes.Count; i++)
+                foreach (var v in State.NewThinShapes[i].Vertices) { v.X += X; v.Y += Y; }
         }
 
         private static ParsedGerber ProcessStream(ProgressLog log, string gerberfile, bool forcezerowidth, bool writesanitized, GerberParserState State, StreamReader sr)
@@ -1966,6 +2041,15 @@ namespace GerberLibrary
             var G = ParseGerber274x(log, lines, false, forcezerowidth, State); ;
             G.Name = gerberfile;
             return G;
+        }
+
+        /// <summary>Optional hole parameters of a standard aperture: diameter at index, rectangular hole height after it.</summary>
+        private static void SetApertureHole(GerberApertureType AT, GCodeCommand GCC, int index, GerberParserState State)
+        {
+            if (GCC.numbercommands.Count <= index) return;
+            double width = Math.Abs(State.CoordinateFormat.ScaleFileToMM(GCC.numbercommands[index]));
+            double height = GCC.numbercommands.Count > index + 1 ? Math.Abs(State.CoordinateFormat.ScaleFileToMM(GCC.numbercommands[index + 1])) : 0;
+            AT.SetHole(width, height);
         }
 
         private static void Progress(string name, int idx, int count)

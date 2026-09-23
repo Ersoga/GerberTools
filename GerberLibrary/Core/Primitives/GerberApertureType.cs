@@ -223,6 +223,18 @@ namespace GerberLibrary.Core.Primitives
         public int NGonYoff;
         public List<double> MacroParamList;
         public double CircleRadius;
+        /// <summary>
+        /// Hole of a standard aperture (C, R, O, P), in mm. HoleHeight 0 means a round hole of diameter HoleWidth;
+        /// a non-zero HoleHeight is the older rectangular hole HoleWidth x HoleHeight. 0 / 0 means no hole.
+        /// Flashes carry the hole as an extra contour after the outline.
+        /// </summary>
+        public double HoleWidth;
+        public double HoleHeight;
+        internal void SetHole(double width, double height)
+        {
+            HoleWidth = Math.Max(0, width);
+            HoleHeight = Math.Max(0, height);
+        }
         private double RectWidth;
         private double RectHeight;
         public void SetCircle(double radius, double xoff = 0, double yoff = 0, double rotation =0)
@@ -282,7 +294,8 @@ namespace GerberLibrary.Core.Primitives
             for (int i = 0; i < sides; i++)
             {
                 double P = i / (double)sides * Math.PI * 2.0 + padd;
-                Shape.Add((double)(xoff + Math.Sin(P) * radius), (double)(yoff + Math.Cos(P) * radius));
+                // unrotated, the first vertex is on the positive X axis (P aperture and macro primitive 5)
+                Shape.Add((double)(xoff + Math.Cos(P) * radius), (double)(yoff + Math.Sin(P) * radius));
             }
             Shape.RotateDegrees(rotation);
         }
@@ -449,6 +462,14 @@ namespace GerberLibrary.Core.Primitives
                     PL.Add(Shape.Vertices[0].X, Shape.Vertices[0].Y);
                     PL.Close();
                     Res.Add(PL);
+                    if (HoleWidth > 0)
+                    {
+                        var hole = new PolyLine(ShapeID);
+                        if (HoleHeight > 0) hole.MakeRectangle(HoleWidth, HoleHeight);
+                        else hole.MakeCircle(HoleWidth / 2, 32);
+                        hole.Close();
+                        Res.Add(hole);   // transformed and translated with the outline below
+                    }
                 }
                 else
                 {
