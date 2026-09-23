@@ -394,16 +394,19 @@ namespace GerberLibrary
 
             using (StreamReader sr = new StreamReader(gerberfile))
             {
-                return ProcessStream(log, gerberfile, forcezerowidth, writesanitized, State, sr);
+                return ProcessStream(log, gerberfile, forcezerowidth, writesanitized, State, sr, false);
             }
         }
 
-        public static ParsedGerber LoadGerberFileFromStream(ProgressLog log, StreamReader sr, string originalfilename, bool forcezerowidth = false, bool writesanitized = false, GerberParserState State = null)
+        /// <param name="parseonly">Only fill the parser state (apertures with their flashes, centerlines, regions) and skip
+        /// the display geometry (joining thin lines into polygons, converting every shape). With forcezerowidth that step
+        /// dominates on boards with thousands of traces.</param>
+        public static ParsedGerber LoadGerberFileFromStream(ProgressLog log, StreamReader sr, string originalfilename, bool forcezerowidth = false, bool writesanitized = false, GerberParserState State = null, bool parseonly = false)
         {
             if (State == null) State = new GerberParserState();
 
             Gerber.DetermineBoardSideAndLayer(originalfilename, out State.Side, out State.Layer);
-            return ProcessStream(log, originalfilename, forcezerowidth, writesanitized, State, sr);
+            return ProcessStream(log, originalfilename, forcezerowidth, writesanitized, State, sr, parseonly);
 
         }
 
@@ -2021,7 +2024,7 @@ namespace GerberLibrary
                 foreach (var v in State.NewThinShapes[i].Vertices) { v.X += X; v.Y += Y; }
         }
 
-        private static ParsedGerber ProcessStream(ProgressLog log, string gerberfile, bool forcezerowidth, bool writesanitized, GerberParserState State, StreamReader sr)
+        private static ParsedGerber ProcessStream(ProgressLog log, string gerberfile, bool forcezerowidth, bool writesanitized, GerberParserState State, StreamReader sr, bool parseonly)
         {
             List<String> lines = new List<string>();
             while (sr.EndOfStream == false)
@@ -2038,7 +2041,7 @@ namespace GerberLibrary
                 State.SanitizedFile = gerberfile + ".sanitized.gerber";
             };
 
-            var G = ParseGerber274x(log, lines, false, forcezerowidth, State); ;
+            var G = ParseGerber274x(log, lines, parseonly, forcezerowidth, State); ;
             G.Name = gerberfile;
             return G;
         }
