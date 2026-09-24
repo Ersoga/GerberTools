@@ -60,6 +60,10 @@ namespace GerberLibrary.Core.Primitives
             PL.ID = ID;
             PL.Hole = Hole;
             PL.Width = Width;
+            PL.ApertureID = ApertureID;
+            PL.ApertureRotation = ApertureRotation;
+            PL.ApertureScale = ApertureScale;
+            PL.ApertureMirror = ApertureMirror;
             PL.Thin = Thin;
             PL.ClearanceMode = ClearanceMode;
             PL.Draw = Draw;
@@ -204,6 +208,14 @@ namespace GerberLibrary.Core.Primitives
         public bool Thin = false;
         public bool ClearanceMode;
         public double Width;
+        /// <summary>For a centerline (a D01 draw read with forcezerowidth): the D code of the aperture that drew it.
+        /// Width is only its circle radius; a rectangle, obround or polygon aperture needs its shape.</summary>
+        public int ApertureID = -1;
+        /// <summary>For a centerline: the aperture transform (%LR, %LS, %LM) in effect when it was drawn, as for a flash
+        /// (CreatePolyLineSet). Width already includes the scale.</summary>
+        public double ApertureRotation = 0;
+        public double ApertureScale = 1.0;
+        public GerberParserState.MirrorMode ApertureMirror = GerberParserState.MirrorMode.NoMirror;
 
         public Color GetColor()
         {

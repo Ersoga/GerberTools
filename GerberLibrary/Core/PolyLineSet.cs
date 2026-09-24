@@ -1049,8 +1049,8 @@ namespace GerberLibrary
                         State.PolygonMode = false;
                     }
                     break;
-                case "LPC": State.ClearanceMode = true; break;
-                case "LPD": State.ClearanceMode = false; break;
+                case "LPC": State.EndThinLine(); State.ClearanceMode = true; break;    // the next draws have the new polarity:
+                case "LPD": State.EndThinLine(); State.ClearanceMode = false; break;   // they start a new line
                 case "MOIN": State.CoordinateFormat.SetImperialMode(); break;
                 case "MOMM": State.CoordinateFormat.SetMetricMode(); break;
                 case "G01":
@@ -1072,6 +1072,7 @@ namespace GerberLibrary
 
         private static void DoRepeating(GerberParserState State)
         {
+            State.EndThinLine();   // a line still being drawn belongs to the block: it is repeated too
             if (State.Repeater == false)
             {
                 // cant stop a repeat that is not happening!
@@ -1079,6 +1080,21 @@ namespace GerberLibrary
             }
             int LastThin = State.NewThinShapes.Count();
             int LastShape = State.NewShapes.Count();
+
+            // Copies are numbered in the order of the originals, lines and shapes together: the ID is the drawing order,
+            // and a clear line drawn after a region in the block must still come after it in every copy.
+            var ids = new SortedSet<int>();
+            for (int i = State.RepeatStartThinShapeIdx; i < LastThin; i++) ids.Add(State.NewThinShapes[i].ID);
+            for (int i = State.RepeatStartShapeIdx; i < LastShape; i++) ids.Add(State.NewShapes[i].ID);
+
+            // Flashes in the block: their copies are flashes of the same aperture, not regions.
+            var repeated = new HashSet<PolyLine>();
+            for (int i = State.RepeatStartShapeIdx; i < LastShape; i++) repeated.Add(State.NewShapes[i]);
+            var flashes = new List<Tuple<GerberApertureType, List<PolyLine>>>();
+            foreach (var aperture in State.Apertures.Values)
+                foreach (var flash in aperture.Shapes)
+                    if (flash.Count > 0 && repeated.Contains(flash[0])) flashes.Add(Tuple.Create(aperture, flash));
+
             for (int x = 0; x < State.RepeatXCount; x++)
             {
                 for (int y = 0; y < State.RepeatYCount; y++)
@@ -1087,17 +1103,18 @@ namespace GerberLibrary
                     {
                         double xoff = State.RepeatXOff * x;
                         double yoff = State.RepeatYOff * y;
-                        int LastShapeID = -1;
+                        var copyID = new Dictionary<int, int>();
+                        foreach (int id in ids) copyID[id] = ++State.LastShapeID;
+                        var copies = new Dictionary<PolyLine, PolyLine>();
                         for (int i = State.RepeatStartThinShapeIdx; i < LastThin; i++)
                         {
                             var C = State.NewThinShapes[i];
-                            if (LastShapeID != C.ID)
-                            {
-                                State.LastShapeID++;
-                                LastShapeID = C.ID;
-                            }
-                            PolyLine P = new PolyLine(State.LastShapeID);
+                            PolyLine P = new PolyLine(copyID[C.ID]);
                             P.Width = C.Width;
+                            P.ApertureID = C.ApertureID;
+                            P.ApertureRotation = C.ApertureRotation;
+                            P.ApertureScale = C.ApertureScale;
+                            P.ApertureMirror = C.ApertureMirror;
                             P.ClearanceMode = C.ClearanceMode;
                             foreach (var a in C.Vertices)
                             {
@@ -1108,12 +1125,7 @@ namespace GerberLibrary
                         for (int i = State.RepeatStartShapeIdx; i < LastShape; i++)
                         {
                             var C = State.NewShapes[i];
-                            if (LastShapeID != C.ID)
-                            {
-                                State.LastShapeID++;
-                                LastShapeID = C.ID;
-                            }
-                            PolyLine P = new PolyLine(State.LastShapeID);
+                            PolyLine P = new PolyLine(copyID[C.ID]);
                             P.Width = C.Width;
                             P.ClearanceMode = C.ClearanceMode;
                             foreach (var a in C.Vertices)
@@ -1122,7 +1134,11 @@ namespace GerberLibrary
 
                             }
                             State.NewShapes.Add(P);
-
+                            copies[C] = P;
+                        }
+                        foreach (var flash in flashes)
+                        {
+                            flash.Item1.Shapes.Add(flash.Item2.Where(copies.ContainsKey).Select(p => copies[p]).ToList());
                         }
 
                     }
@@ -1901,7 +1917,11 @@ namespace GerberLibrary
                                                                 {
                                                                     State.ThinLine = new PolyLine(State.LastShapeID++);
                                                                     State.ThinLine.ClearanceMode = State.ClearanceMode;
-                                                                    State.ThinLine.Width = State.CurrentAperture.CircleRadius;
+                                                                    State.ThinLine.Width = State.CurrentAperture.CircleRadius * State.FlashScale;
+                                                                    State.ThinLine.ApertureID = State.CurrentAperture.ID;
+                                                                    State.ThinLine.ApertureRotation = State.FlashRotation;
+                                                                    State.ThinLine.ApertureScale = State.FlashScale;
+                                                                    State.ThinLine.ApertureMirror = State.FlashMirror;
                                                                     //Console.WriteLine("Start: {0:N2} , {1:N2} - {2}", State.LastX, State.LastY, Line);
                                                                     State.ThinLine.Add(State.LastX, State.LastY);
                                                                 }
@@ -2073,6 +2093,7 @@ namespace GerberLibrary
 
         private static void SetupRepeater(GerberParserState State, int Xcount, int Ycount, double Xoff, double Yoff)
         {
+            State.EndThinLine();   // a line drawn before the block is not part of it
             if (State.Repeater == true) DoRepeating(State);
 
             State.Repeater = (Xcount * Ycount > 1) ? true : false;
