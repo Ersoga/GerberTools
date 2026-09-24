@@ -19,6 +19,8 @@ namespace GerberLibrary
         {   
             public PointD Start = new PointD();
             public PointD End = new PointD();
+            /// <summary>A segment of one of the tool's Routes (not a G85 slot).</summary>
+            public bool Routed;
 
             public override string ToString()
             {
@@ -26,6 +28,11 @@ namespace GerberLibrary
             }
         }
         public List<SlotInfo> Slots = new List<SlotInfo>();
+        /// <summary>
+        /// Routed cuts (G01/G02/G03 until M16/M17, G00, G05 or a tool change): the cutter centerline, arcs as points.
+        /// Each segment is also in Slots with Routed = true.
+        /// </summary>
+        public List<List<PointD>> Routes = new List<List<PointD>>();
     };
 
     public class ExcellonFile
@@ -408,6 +415,27 @@ namespace GerberLibrary
             return System.Text.RegularExpressions.Regex.IsMatch(line, @"^T\d+$");
         }
 
+        /// <summary>
+        /// Center of a routed arc from (x1, y1) to (x2, y2), relative to the start: I/J give it directly; A gives the radius,
+        /// and the arc is the one up to 180 degrees, so the center is right of the chord for G02 and left of it for G03.
+        /// </summary>
+        bool ArcCenter(GerberSplitter GS, double Scaler, double x1, double y1, double x2, double y2, InterpolationMode mode, out double i, out double j)
+        {
+            i = GS.Has("I") ? GNF.ScaleFileToMM(GS.Get("I") * Scaler) : 0;
+            j = GS.Has("J") ? GNF.ScaleFileToMM(GS.Get("J") * Scaler) : 0;
+            if (GS.Has("I") || GS.Has("J")) return true;
+            if (!GS.Has("A")) return false;
+            double r = Math.Abs(GNF.ScaleFileToMM(GS.Get("A") * Scaler));
+            double dx = x2 - x1, dy = y2 - y1, chord = Math.Sqrt(dx * dx + dy * dy);
+            if (chord == 0 || r == 0) return false;
+            double h = Math.Sqrt(Math.Max(0, r * r - chord * chord / 4));
+            double ux = dx / chord, uy = dy / chord;
+            double side = mode == InterpolationMode.ClockWise ? 1 : -1;   // right normal is (uy, -ux)
+            i = dx / 2 + side * h * uy;
+            j = dy / 2 - side * h * ux;
+            return true;
+        }
+
         bool ParseExcellon(List<string> lines, double drillscaler,ProgressLog log )
         {
             var LogID = log.PushActivity("Parse Excellon");
@@ -427,6 +455,38 @@ namespace GerberLibrary
             CutterCompensation Compensation = CutterCompensation.None;
             List<PointD> PathCompensation = new List<PointD>();
             bool WarnIntersections = true;
+
+            // Route mode: G01/G02/G03 cut from the last point, and a bare coordinate continues the cut with the same
+            // interpolation, until M15/M16/M17, G00, G05 or a tool change ends it. Before, a bare coordinate in a
+            // route became a drill hit, and G02/G03 were not read at all (their end point became a drill hit).
+            InterpolationMode routeMode = InterpolationMode.Linear;
+            List<PointD> route = null;
+            void EndRoute()
+            {
+                if (route != null && route.Count >= 2) CurrentTool?.Routes.Add(route);
+                route = null;
+            }
+            void RouteTo(GerberSplitter GS, double x2, double y2)
+            {
+                List<PointD> points = new List<PointD>();
+                if (routeMode != InterpolationMode.Linear && ArcCenter(GS, Scaler, LastX, LastY, x2, y2, routeMode, out double i, out double j))
+                {
+                    points = Gerber.CreateCurvePoints(LastX, LastY, x2, y2, i, j, routeMode, GerberQuadrantMode.Multi);
+                    if (points.Count > 0) points.RemoveAt(points.Count - 1);   // computed end, replaced by the exact one
+                }
+                points.Add(new PointD(x2, y2));
+                if (route == null) route = new List<PointD> { new PointD(LastX * drillscaler, LastY * drillscaler) };
+                foreach (var p in points)
+                {
+                    PointD next = new PointD(p.X * drillscaler, p.Y * drillscaler);
+                    PointD last = route[route.Count - 1];
+                    if (Math.Abs(next.X - last.X) < 1e-9 && Math.Abs(next.Y - last.Y) < 1e-9) continue;
+                    CurrentTool?.Slots.Add(new ExcellonTool.SlotInfo() { Start = last, End = next, Routed = true });
+                    route.Add(next);
+                }
+                LastX = x2;
+                LastY = y2;
+            }
             while (currentline < lines.Count)
             {
                 switch(lines[currentline])
@@ -600,6 +660,7 @@ namespace GerberLibrary
                                         // T0 usually unloads the tool, but some writers define T0 with a diameter in the
                                         // header and drill with it. A tool the header never defined (or defines inline,
                                         // "T3C0.8") is created here instead of throwing KeyNotFoundException.
+                                        EndRoute();
                                         int id = (int)GCC.numbercommands[0];
                                         if (!Tools.TryGetValue(id, out ExcellonTool tool) && id > 0)
                                         {
@@ -615,6 +676,9 @@ namespace GerberLibrary
                                     {                                    
                                         GerberSplitter GS = new GerberSplitter();
                                         GS.Split(GCC.originalline, GNF, true);
+                                        if (GS.Has("M") && (GS.Get("M") == 15 || GS.Get("M") == 16 || GS.Get("M") == 17)) EndRoute();   // plunge / retract
+                                        if (GS.Has("M") && GS.Get("M") == 15) route = new List<PointD> { new PointD(LastX * drillscaler, LastY * drillscaler) };   // tool down: bare coordinates cut
+                                        if (GS.Has("G") && (GS.Get("G") == 0 || GS.Get("G") == 5)) EndRoute();                         // rapid move / drill mode
                                         if (GS.Has("G") && GS.Get("G") == 85 && (GS.Has("X") || GS.Has("Y")))
                                         {
                                             GerberListSplitter GLS = new GerberListSplitter();
@@ -653,25 +717,28 @@ namespace GerberLibrary
                                             Compensation = CutterCompensation.None;
                                             PathCompensation.Clear();
                                         }
-                                        else if (GS.Has("G") && GS.Get("G") == 01 && (GS.Has("X") || GS.Has("Y")))
+                                        else if (GS.Has("G") && (GS.Get("G") == 01 || GS.Get("G") == 02 || GS.Get("G") == 03) && (GS.Has("X") || GS.Has("Y")))
                                         {
                                             GerberListSplitter GLS = new GerberListSplitter();
                                             GLS.Split(GCC.originalline, GNF, true);
 
-                                            double x1 = LastX;
-                                            double y1 = LastY;
                                             double x2 = LastX;
                                             double y2 = LastY;
 
-                                            if (GLS.HasAfter("G", "X")) { x2 = GNF.ScaleFileToMM(GLS.GetAfter("G", "X") * Scaler); LastX = x2; }
-                                            if (GLS.HasAfter("G", "Y")) { y2 = GNF.ScaleFileToMM(GLS.GetAfter("G", "Y") * Scaler); LastY = y2; }
+                                            if (GLS.HasAfter("G", "X")) x2 = GNF.ScaleFileToMM(GLS.GetAfter("G", "X") * Scaler);
+                                            if (GLS.HasAfter("G", "Y")) y2 = GNF.ScaleFileToMM(GLS.GetAfter("G", "Y") * Scaler);
+                                            int g = (int)GS.Get("G");
+                                            routeMode = g == 2 ? InterpolationMode.ClockWise : g == 3 ? InterpolationMode.CounterClockwise : InterpolationMode.Linear;
                                             if (Compensation == CutterCompensation.None)
-                                                CurrentTool?.Slots.Add(new ExcellonTool.SlotInfo() { Start = new PointD(x1 * drillscaler, y1 * drillscaler), End = new PointD(x2 * drillscaler, y2 * drillscaler) });
+                                            {
+                                                RouteTo(GS, x2, y2);
+                                            }
                                             else
+                                            {
                                                 PathCompensation.Add(new PointD(x2 * drillscaler, y2 * drillscaler));
-
-                                            LastX = x2;
-                                            LastY = y2;
+                                                LastX = x2;
+                                                LastY = y2;
+                                            }
                                         }
                                         else if (GS.Has("G") && GS.Get("G") == 40) /* cutter compensation off */
                                         {
@@ -768,10 +835,12 @@ namespace GerberLibrary
                                                 if (GS.Has("X")) X = GNF.ScaleFileToMM(GS.Get("X") * Scaler);
                                                 double Y = LastY;
                                                 if (GS.Has("Y")) Y = GNF.ScaleFileToMM(GS.Get("Y") * Scaler);
-                                                if (Compensation == CutterCompensation.None)
-                                                    CurrentTool?.Drills.Add(new PointD(X * drillscaler, Y * drillscaler));
-                                                else
+                                                if (Compensation != CutterCompensation.None)
                                                     PathCompensation.Add(new PointD(X * drillscaler, Y * drillscaler));
+                                                else if (route != null)
+                                                    RouteTo(GS, X, Y);   // modal: the cut goes on
+                                                else
+                                                    CurrentTool?.Drills.Add(new PointD(X * drillscaler, Y * drillscaler));
                                                 LastX = X;
                                                 LastY = Y;
                                             }
@@ -784,6 +853,7 @@ namespace GerberLibrary
                 }
                 currentline++;
             }
+            EndRoute();
             log.PopActivity(LogID);
             return headerdone;
         }
