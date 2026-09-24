@@ -1037,6 +1037,7 @@ namespace GerberLibrary
                 case "G37":
                     {
                         PolyLine PL = new PolyLine(State.LastShapeID++);
+                        PL.ClearanceMode = State.ClearanceMode;   // a region drawn under %LPC*% clears, like its other contours
                         foreach (var a in State.PolygonPoints)
                         {
                             PL.Add(a.X, a.Y);
@@ -1096,6 +1097,8 @@ namespace GerberLibrary
                                 LastShapeID = C.ID;
                             }
                             PolyLine P = new PolyLine(State.LastShapeID);
+                            P.Width = C.Width;
+                            P.ClearanceMode = C.ClearanceMode;
                             foreach (var a in C.Vertices)
                             {
                                 P.Vertices.Add(new PointD(a.X + xoff, a.Y + yoff));
@@ -1112,6 +1115,7 @@ namespace GerberLibrary
                             }
                             PolyLine P = new PolyLine(State.LastShapeID);
                             P.Width = C.Width;
+                            P.ClearanceMode = C.ClearanceMode;
                             foreach (var a in C.Vertices)
                             {
                                 P.Vertices.Add(new PointD(a.X + xoff, a.Y + yoff));
